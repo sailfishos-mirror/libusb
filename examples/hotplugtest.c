@@ -228,6 +228,46 @@ static int ask_hotplug_enumerate_flag(void)
 	}
 }
 
+/* When enabled (-o on command line), each arrival is probed for actual usability: 
+ * open the device and try to claim (then immediately release) every interface of the
+ * active configuration, printing the outcome of each call. This makes issues
+ * where DEVICE_ARRIVED fires for a not-yet-usable device directly visible. */
+static bool open_on_arrival = false;
+
+static void open_and_claim(libusb_device *dev)
+{
+	struct libusb_config_descriptor *config;
+	libusb_device_handle *handle;
+	uint8_t i;
+	int rc;
+
+	rc = libusb_open(dev, &handle);
+	printf("    open = %s\n",
+		(LIBUSB_SUCCESS == rc) ? "OK" : libusb_strerror((enum libusb_error)rc));
+	if (LIBUSB_SUCCESS != rc)
+		return;
+
+	rc = libusb_get_active_config_descriptor(dev, &config);
+	if (LIBUSB_SUCCESS != rc) {
+		printf("    get active config = %s\n", libusb_strerror((enum libusb_error)rc));
+		libusb_close(handle);
+		return;
+	}
+
+	for (i = 0; i < config->bNumInterfaces; i++) {
+		const int interface_number = config->interface[i].altsetting[0].bInterfaceNumber;
+
+		rc = libusb_claim_interface(handle, interface_number);
+		printf("    claim interface %d = %s\n", interface_number,
+			(LIBUSB_SUCCESS == rc) ? "OK" : libusb_strerror((enum libusb_error)rc));
+		if (LIBUSB_SUCCESS == rc)
+			libusb_release_interface(handle, interface_number);
+	}
+
+	libusb_free_config_descriptor(config);
+	libusb_close(handle);
+}
+
 static int LIBUSB_CALL hotplug_callback(libusb_context *ctx, libusb_device *dev, libusb_hotplug_event event, void *user_data)
 {
 	struct hotplug_state *state = (struct hotplug_state *)user_data;
@@ -237,6 +277,9 @@ static int LIBUSB_CALL hotplug_callback(libusb_context *ctx, libusb_device *dev,
 
 	state->arrived++;
 	print_device_event("\nDevice attached", dev, state);
+
+	if (open_on_arrival)
+		open_and_claim(dev);
 
 	return 0;
 }
@@ -260,13 +303,29 @@ int main(int argc, const char *argv[])
 	struct hotplug_state state = { 0, 0, 0 };
 	libusb_hotplug_callback_handle hp[2];
 	bool callback_registered[2] = { false, false };
+	int match_ids[3] = { LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY, LIBUSB_HOTPLUG_MATCH_ANY };
 	int product_id, vendor_id, class_id;
 	int arrival_flags;
+	int nb_match_ids = 0;
+	int arg;
 	int rc;
 
-	vendor_id  = (argc > 1) ? (int)strtol (argv[1], NULL, 0) : LIBUSB_HOTPLUG_MATCH_ANY;
-	product_id = (argc > 2) ? (int)strtol (argv[2], NULL, 0) : LIBUSB_HOTPLUG_MATCH_ANY;
-	class_id   = (argc > 3) ? (int)strtol (argv[3], NULL, 0) : LIBUSB_HOTPLUG_MATCH_ANY;
+	for (arg = 1; arg < argc; arg++) {
+		if (0 == strcmp(argv[arg], "-o")) {
+			open_on_arrival = true;
+		} else if (nb_match_ids < 3) {
+			match_ids[nb_match_ids++] = (int)strtol (argv[arg], NULL, 0);
+		} else {
+			printf("Usage: %s [-o] [vendor_id [product_id [class_id]]]\n", argv[0]);
+			printf("  -o  on each arrival, open the device and try to claim each\n");
+			printf("      interface of its active configuration, printing the outcome\n");
+			return EXIT_FAILURE;
+		}
+	}
+
+	vendor_id  = match_ids[0];
+	product_id = match_ids[1];
+	class_id   = match_ids[2];
 
 	/* Keep stdout unbuffered so that captured events (to file or pipe)
 	 * interleave correctly with libusb's stderr debug output and nothing
