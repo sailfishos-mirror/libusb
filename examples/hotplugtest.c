@@ -22,6 +22,7 @@
 
 #include <config.h>
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -297,6 +298,17 @@ static int LIBUSB_CALL hotplug_callback_detach(libusb_context *ctx, libusb_devic
 	return 0;
 }
 
+static void print_usage(FILE *out, const char *program_name)
+{
+	fprintf(out, "Usage: %s [-o] [vendor_id [product_id [class_id]]]\n", program_name);
+	fprintf(out, "  -h  print this help text and exit\n");
+	fprintf(out, "  -o  on each arrival, open the device and try to claim each\n");
+	fprintf(out, "      interface of its active configuration, printing the outcome\n");
+	fprintf(out, "The optional ids are read with strtol(), so decimal, hex (0x...)\n");
+	fprintf(out, "and octal (0...) notations are accepted. Without ids, all devices\n");
+	fprintf(out, "are monitored.\n");
+}
+
 int main(int argc, const char *argv[])
 {
 	libusb_context *ctx = NULL;
@@ -313,12 +325,26 @@ int main(int argc, const char *argv[])
 	for (arg = 1; arg < argc; arg++) {
 		if (0 == strcmp(argv[arg], "-o")) {
 			open_on_arrival = true;
+		} else if (0 == strcmp(argv[arg], "-h") || 0 == strcmp(argv[arg], "--help") ||
+			   0 == strcmp(argv[arg], "-?")) {
+			print_usage(stdout, argv[0]);
+			return EXIT_SUCCESS;
+		} else if ('-' == argv[arg][0] && !isdigit((unsigned char)argv[arg][1])) {
+			fprintf(stderr, "Unknown option: %s\n", argv[arg]);
+			print_usage(stderr, argv[0]);
+			return EXIT_FAILURE;
 		} else if (nb_match_ids < 3) {
-			match_ids[nb_match_ids++] = (int)strtol (argv[arg], NULL, 0);
+			char *end;
+
+			match_ids[nb_match_ids++] = (int)strtol(argv[arg], &end, 0);
+			if (end == argv[arg] || '\0' != *end) {
+				fprintf(stderr, "Invalid id: %s\n", argv[arg]);
+				print_usage(stderr, argv[0]);
+				return EXIT_FAILURE;
+			}
 		} else {
-			printf("Usage: %s [-o] [vendor_id [product_id [class_id]]]\n", argv[0]);
-			printf("  -o  on each arrival, open the device and try to claim each\n");
-			printf("      interface of its active configuration, printing the outcome\n");
+			fprintf(stderr, "Too many arguments: %s\n", argv[arg]);
+			print_usage(stderr, argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
